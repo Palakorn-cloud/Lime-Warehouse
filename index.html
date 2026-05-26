@@ -1,5 +1,17 @@
 bash
-
+<script>
+  // ══════════════════════════════════════════════════
+  // CONFIG & URL (ใส่ URL ของคุณที่นี่)
+  // ══════════════════════════════════════════════════
+  const FIXED_GAS_URL = 'https://script.google.com/macros/s/AKfycbwXEFHMBUStbQy3nkx6-D2GYA-hzsses_ZA-ZQzFrVWu_l8IfItKJR1on-mSrdxP2rm/exec';
+  const STORAGE_KEY = 'lw_cache_v6';
+  const GAS_URL_KEY = 'lw_gas_url_v6'; // ชื่อ Key สำหรับเก็บใน localStorage
+  const RETRY_KEY   = 'lw_retry_v6';
+  
+  // ให้ GAS_URL มีค่าเริ่มต้นจาก FIXED_GAS_URL ทันที
+  let GAS_URL = localStorage.getItem(GAS_URL_KEY) || FIXED_GAS_URL;
+  
+  // ══════════════════════════════════════════════════
 cat > /home/claude/warehouse_v6.html << 'ENDOFFILE'
 <!DOCTYPE html>
 <html lang="th">
