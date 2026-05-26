@@ -1,0 +1,164 @@
+// ════════════════════════════════════════════
+// Google Apps Script — Code.gs (v5)
+// คลังปูนขาว — Pallet Manager
+// ════════════════════════════════════════════
+// วิธี Deploy:
+//   Extensions > Apps Script > Deploy > New Deployment
+//   Type: Web App | Execute as: Me | Access: Anyone (anonymous)
+//   ** ต้อง Deploy ใหม่ทุกครั้งที่แก้โค้ด **
+
+const SHEET_TX  = 'Transactions';
+const SHEET_PAL = 'Pallets';
+
+// ── CORS headers สำหรับ mobile fetch ──
+function setCORSHeaders(output) {
+  return output; // GAS จัดการ CORS อัตโนมัติเมื่อ Deploy เป็น Anyone
+}
+
+// ════════ POST — รับ Transaction จากเว็บ ════════
+function doPost(e) {
+  const lock = LockService.getScriptLock();
+  // รอสูงสุด 15 วินาที (ป้องกัน concurrent write)
+  if (!lock.tryLock(15000)) {
+    return jsonResponse({ status: 'error', message: 'Server busy, retry later' });
+  }
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      throw new Error('No POST data received');
+    }
+    const body = JSON.parse(e.postData.contents);
+    const ss   = SpreadsheetApp.getActiveSpreadsheet();
+
+    if (body.action === 'addTransaction') {
+      if (!body.data || !body.data.palletId) {
+        throw new Error('Missing required fields: palletId');
+      }
+      // ✅ เขียน Transactions ก่อน แล้วค่อย update Stock
+      writeTransaction(ss, body.data);
+      updatePalletStock(ss, body.data.palletId, body.data.newQty);
+      return jsonResponse({
+        status:   'ok',
+        txId:     body.data.id,
+        palletId: body.data.palletId,
+        newQty:   body.data.newQty,
+        time:     new Date().toISOString()
+      });
+    }
+
+    return jsonResponse({ status: 'error', message: 'Unknown action: ' + body.action });
+
+  } catch(err) {
+    console.error('doPost error:', err.message, err.stack);
+    return jsonResponse({ status: 'error', message: err.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ════════ GET — ส่งข้อมูลกลับเว็บ ════════
+function doGet(e) {
+  try {
+    const ss     = SpreadsheetApp.getActiveSpreadsheet();
+    const action = (e && e.parameter && e.parameter.action) || '';
+
+    if (action === 'ping') {
+      return jsonResponse({ status: 'ok', time: new Date().toISOString(), version: 'v5' });
+    }
+
+    if (action === 'getStock') {
+      const sh = ss.getSheetByName(SHEET_PAL);
+      if (!sh || sh.getLastRow() <= 1) return jsonResponse({ status: 'ok', data: [] });
+      const rows = sh.getDataRange().getValues();
+      const hdrs = rows[0];
+      const data = rows.slice(1).map(r => {
+        const obj = {};
+        hdrs.forEach((h, i) => obj[h] = r[i]);
+        return obj;
+      });
+      return jsonResponse({ status: 'ok', data });
+    }
+
+    if (action === 'getHistory') {
+      const sh = ss.getSheetByName(SHEET_TX);
+      if (!sh || sh.getLastRow() <= 1) return jsonResponse({ status: 'ok', data: [] });
+      const rows = sh.getDataRange().getValues();
+      const hdrs = rows[0];
+      // ✅ ส่ง 30 วันย้อนหลัง (1 เดือน) เรียงใหม่สุดก่อน
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 30);
+      const data = rows.slice(1)
+        .map(r => { const obj = {}; hdrs.forEach((h, i) => obj[h] = r[i]); return obj; })
+        .filter(row => row.timestamp && new Date(row.timestamp) >= cutoff)
+        .reverse()
+        .slice(0, 500);
+      return jsonResponse({ status: 'ok', data });
+    }
+
+    return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
+
+  } catch(err) {
+    console.error('doGet error:', err.message);
+    return jsonResponse({ status: 'error', message: err.message });
+  }
+}
+
+// ════════ เขียน Transaction ════════
+function writeTransaction(ss, d) {
+  let sh = ss.getSheetByName(SHEET_TX);
+  if (!sh) {
+    sh = ss.insertSheet(SHEET_TX);
+    sh.appendRow(['timestamp','palletId','type','qty','newQty','employee','txId','note']);
+    sh.setFrozenRows(1);
+    // Format header
+    sh.getRange(1, 1, 1, 8).setFontWeight('bold').setBackground('#1e3a5f').setFontColor('#ffffff');
+  }
+  // ✅ ตรวจ duplicate txId ก่อน (ป้องกัน retry ซ้ำ)
+  if (d.id) {
+    const existing = sh.getDataRange().getValues();
+    for (let i = 1; i < existing.length; i++) {
+      if (existing[i][6] === d.id) {
+        console.log('Duplicate txId skipped:', d.id);
+        return; // ข้ามถ้ามีอยู่แล้ว
+      }
+    }
+  }
+  sh.appendRow([
+    d.timestamp || new Date().toISOString(),
+    d.palletId,
+    d.type,
+    Number(d.qty)    || 0,
+    Number(d.newQty) || 0,
+    d.employee || '',
+    d.id       || '',
+    d.note     || ''
+  ]);
+}
+
+// ════════ อัปเดต Stock ════════
+function updatePalletStock(ss, palletId, newQty) {
+  let sh = ss.getSheetByName(SHEET_PAL);
+  if (!sh) {
+    sh = ss.insertSheet(SHEET_PAL);
+    sh.appendRow(['palletId','qty','updatedAt']);
+    sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, 3).setFontWeight('bold').setBackground('#1e3a5f').setFontColor('#ffffff');
+  }
+  const now  = new Date().toISOString();
+  const data = sh.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] === palletId) {
+      sh.getRange(i + 1, 2).setValue(Number(newQty) || 0);
+      sh.getRange(i + 1, 3).setValue(now);
+      return;
+    }
+  }
+  // ยังไม่มีแถว → เพิ่มใหม่
+  sh.appendRow([palletId, Number(newQty) || 0, now]);
+}
+
+// ════════ Helper ════════
+function jsonResponse(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
