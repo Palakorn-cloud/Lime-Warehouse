@@ -508,11 +508,7 @@ async function syncTransactionOnline(txData) {
     // ✅ Mark synced ใน local cache
     const tx = DB.transactions.find(t => t.id === txData.id);
     if (tx) { tx.synced = true; saveDB(); }
-    / --- เริ่มต้นส่วนที่เพิ่มเข้าไป ---
-    await loadStockFromCloud(); // สั่งดึงข้อมูลสดๆ จาก Google Sheet มาเก็บไว้ในเครื่อง
-    if (typeof renderDashboard === 'function') renderDashboard(); // วาด Dashboard ใหม่
-    if (typeof renderPalletGrid === 'function') renderPalletGrid(); // วาดตารางพาเลทใหม่
-    // --- สิ้นสุดส่วนที่เพิ่มเข้าไป ---
+    
     updateSyncBadge('ok');
     return true;
   } catch(err) {
